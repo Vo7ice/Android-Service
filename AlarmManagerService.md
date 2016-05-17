@@ -9,6 +9,7 @@
 - 它把逻辑闹钟分成几个大类,分别记录在不同的列表中.
 - ALMS会在一个专门的线程中循环等待闹钟的激发,一旦时机到了,就"回调"逻辑闹钟对应的动作.
 - ALMS在`SystemServer`中通过`startOtherServices` 注册到系统服务中.
+    
     ```
     mSystemServiceManager.startService(AlarmManagerService.class);
     alarm = IAlarmManager.Stub.asInterface(
@@ -28,6 +29,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
 ## 添加定时器流程
 - client通过`(AlarmManager)context.getSystemService(Context.ALARM_SERVICE);`来获得`AlarmManager`的实例,然后调用`set`或`setExact`来设置闹钟
 - 不管client调用`set`还是`setExact`,最终会调用`setImpl`方法
+
     ```
     private void setImpl(int type, long triggerAtMillis, long windowMillis, long intervalMillis,
             int flags, PendingIntent operation, WorkSource workSource, AlarmClockInfo alarmClock) {
@@ -42,6 +44,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
         }
     ```
 - `mService`为`IAlarmManager`通过`binder`机制绑定了`AlarmManagerService`中的成员变量`mService`,这样就调用了`AlarmManagerService`的`set`方法,也就调用了`setImpl`方法
+    
     ```
     void setImpl(int type, long triggerAtTime, long windowLength, long interval,
             PendingIntent operation, int flags, WorkSource workSource,
@@ -116,6 +119,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
         }
     ```
 - 接下来就到了`setImplLocked`这个方法了.
+    
     ```
     /*
      *@params when : alarm触发时间有可能是rtc也有可能是elapsed的
@@ -169,6 +173,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
 - 从这里看出来设置到底层的闹钟只与类型、和触发的秒数和nano秒数有关，与其他的所有属性都没有关系。设置定时器就说完了。
 ## 开启服务流程
 - 七个`native`函数
+    
     ```
     //打开设备驱动"/dev/alarm"返回一个long型的与fd有关的数
     private native long init();
@@ -186,6 +191,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
     private native boolean bootFromAlarm(int fd);
     ```
 - `onStart`函数
+    
     ```
     @Override
     public void onStart() {
@@ -242,6 +248,10 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
     - `publishBinderService(Context.ALARM_SERVICE, mService)`这个函数做的事是将一个binder对象注册进了ServiceManager
     -  `AlarmManagerService.java  AlarmThrea内部类`,闹钟的激发、传递、排期都是由这个线程决定的.
 - `AlarmThrea` 的`run`方法
+    
+    **run示意图**
+
+    ![run] (https://raw.githubusercontent.com/Vo7ice/Android-Service/master/3.png)
     ```
     public void run()
     {
@@ -342,6 +352,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
     }
     ```
     - 重要函数一:`triggerAlarmsLocked(triggerList, nowELAPSED, nowRTC);`
+        
         ```
         boolean triggerAlarmsLocked(ArrayList<Alarm> triggerList, final long nowELAPSED,
             final long nowRTC) {
@@ -414,6 +425,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
         ```
         `triggerAlarmsLocked`做的就是将符合激发条件的定时器移到`AlarmThread`临时创建的`triggerList`中
     - 重要函数二:`deliverAlarmsLocked(triggerList, nowELAPSED);`
+        
         ```
         void deliverAlarmsLocked(ArrayList<Alarm> triggerList, long nowELAPSED) {
             mLastAlarmDeliveryTime = nowELAPSED;
@@ -509,6 +521,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
         }
         ```
         遍历每一个`Alarm`对象,就执行它的`alarm.operation.send()`,`alarm`中记录的`operation`就是设置的时候传来的`PendingIntent`,也就是执行了`PendingIntent`的`send()`方法.
+        
         ```
         public void send(Context context, int code, @Nullable Intent intent,
             @Nullable OnFinished onFinished, @Nullable Handler handler,
@@ -518,6 +531,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
         }
         ```
         调用了下面的`send()`函数
+        
         ```
         public void send(Context context, int code, @Nullable Intent intent,
             @Nullable OnFinished onFinished, @Nullable Handler handler,
@@ -542,7 +556,12 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
         ```
         `mTarget`是个`IPendingIntent`代理接口，它对应AMS(`Activity Manager Service`)中的某个`PendingIntentRecord实体`.需要说明的是,`PendingIntent`的重要信息都是在AMS的`PendingIntentRecord`以及`PendingIntentRecord.Key`对象中管理的.AMS中有一张哈希表专门用于记录所有可用的`PendingIntentRecord`对象.
         
+        **哈希表** 
+        
+        ![hashTable] (https://raw.githubusercontent.com/Vo7ice/Android-Service/master/2.png)
+        
         接下来就是唤醒闹钟的事情了.
+        
         ```
         if (alarm.type == ELAPSED_REALTIME_WAKEUP
                         || alarm.type == RTC_WAKEUP) {
@@ -562,6 +581,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
         ```
         - 这两种`alarm`就是我们常说的0型和2型闹钟,它们和我们手机的续航时间息息相关.
         - AMS里的`noteWakeupAlarm()`比较简单,只是在调用`BatteryStatsService`服务的相关动作,但是却会导致机器的唤醒.
+        
         ```
         public void noteAlarmStart(IIntentSender sender, int sourceUid, String tag) {
             if (!(sender instanceof PendingIntentRecord)) {
@@ -577,7 +597,10 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
             }
         }
         ```
-        ![image](http://note.youdao.com/favicon.ico)
+        **总结**
+        
+        ![image](https://raw.githubusercontent.com/Vo7ice/Android-Service/master/1.png)
+        
 - `mBroadcastRefCount`的用法
     ```
     for (int i=0; i<triggerList.size(); i++) {
@@ -608,6 +631,7 @@ ELAPSED_REALTIME | SystemClock.elapsedRealtime(),睡眠状态不可唤醒
     `class ResultReceiver implements PendingIntent.OnFinished`
     
     当`send`函数结束后,框架会间接回调这个对象的`onSendFinished()`方法
+    
     ```
     public void onSendFinished(PendingIntent pi, Intent intent, int resultCode,
             String resultData, Bundle resultExtras) {
