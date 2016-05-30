@@ -1,7 +1,9 @@
 # ActivityManagerService
+
 ## 注册
 SystemServer中:
   在`SystemServer`中的`run`方法中的`startBootstrapServices`时候,通过继承自`SystemService`的内部类`LifeCycle`来获得`ActivityManagerService`的对象,然后设置了`SystemServiceManager`和`Installer`变量来管理生命周期和安装`Apk`.
+
 ### 构造方法
 1. 通过参数获得上下文
 2. 是否为工厂模式
@@ -29,11 +31,13 @@ SystemServer中:
 17. 初始化`mProcessCpuThread`,用来定时更新系统信息
 18. 加载`WatchDog`看门狗
 19. 是否支持`MultiWindowProxy`多屏协作
+
 ### `start`函数
 - 重启`ActivityManagerService`时清除所有`process`
 - 开启`mProcessCpuThread`.
 - 发布一些服务(电池状态,权限管理,本地服务,ANR管理)
 - 动态处理`AMS`的`Log`
+
 ### `ActivityThread`分析
 在`SystemServer`中通过`createSystemContext`初始化系统进程的上下文.
 在`Android6.0`中,将`ActivityThread`和`ActivityManagerService`解耦出去了.
@@ -185,10 +189,12 @@ SystemServer中:
     - `Application`:`Application`类保存了一个全局的`application`状态.`Application`由`AndroidManifest.xml`中的`<application>`标签声明.在实际使用时需定义`Application`的派生类.
     - `Context`:`Context`是一个接口,通过它可以获取并操作`Application`对应的资源,类,甚至包含于`Application`中的四大组件.
     - `ContextImpl`:为`Context`的常用实现类.
+
 ### 初始化总结
 初始化目的有两个:
  - 初始化了`AMS`对象
  - 创建一个供`SystemServer`进程使用的`Android`运行环境,`Android`运行环境将包括两个成员：`ActivityThread`和`ContextImpl`.
+
 ### `AMS`的`setSystemProcess`分析
 - `setSystemProcess`是为了`System_process`系统进程做准备並开启它.`// Set up the Application instance for the system process and get started.`
 - 这个函数主要做了这么几件事:
