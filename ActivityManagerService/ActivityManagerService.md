@@ -357,6 +357,7 @@ SystemServer中:
        //设置ActivityThread和状态管理
        app.makeActive(mSystemThread.getApplicationThread(), mProcessStats);
        ```
+
 ### `setSystemProcess`总结:
 - 注册`AMS`,`meminfo`,`gfxinfo`等服务到`ServiceManager`中.
 - 根据PKMS返回的`ApplicationInfo`初始化`Android`运行环境,并创建一个代表`SystemServer`进程的`ProcessRecord`,从此,`SystemServer`进程也并入AMS的管理范围内.
