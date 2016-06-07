@@ -367,8 +367,364 @@ SystemServer中:
 ### `setSystemProcess`总结:
 - 注册`AMS`,`meminfo`,`gfxinfo`等服务到`ServiceManager`中.
 - 根据PKMS返回的`ApplicationInfo`初始化`Android`运行环境,并创建一个代表`SystemServer`进程的`ProcessRecord`,从此,`SystemServer`进程也并入AMS的管理范围内.
+
+## `SettingsProvider`运行过程
+在`SystemServer`中通过`mActivityManagerService.installSystemProviders();`来将`SettingsProvider.apk`加载进系统进程中.
+
+###  `installSystemProviders`函数
+
+```Java
+public final void installSystemProviders() {
+    List<ProviderInfo> providers;
+        synchronized (this) {
+            /*
+             * 从集合mProcessNames中找到进程名字为"system",且uid为SYSTEM_UID的ProcessRecord
+             * 也就是之前创建的那个SystemServer进程
+             */
+            ProcessRecord app = mProcessNames.get("system", Process.SYSTEM_UID);
+            //重要函数
+            providers = generateApplicationProvidersLocked(app);
+            if (providers != null) {
+                for (int i=providers.size()-1; i>=0; i--) {
+                    //将非系统APK提供的Provider删除,通过flag
+                    ProviderInfo pi = (ProviderInfo)providers.get(i);
+                    if ((pi.applicationInfo.flags&ApplicationInfo.FLAG_SYSTEM) == 0) {
+                        Slog.w(TAG, "Not installing system proc provider " + pi.name
+                                + ": not system .apk");
+                        providers.remove(i);
+                    }
+                }
+            }
+        }
+        //为SystemServer进程安装Provider
+        if (providers != null) {
+            mSystemThread.installSystemProviders(providers);
+        }
+        //监视Settings数据库中表的变化.
+        //现在有LONG_PRESS_TIMEOUT,TIME_12_24,DEBUG_VIEW_ATTRIBUTES三个配置
+        mCoreSettingsObserver = new CoreSettingsObserver(this);
+
+        //mUsageStatsService.monitorPackages();
+    }
+```
+这里调用了两个重要函数:
+1. 调用`generateApplicationProvidersLocked`函数,返回了一个`ProviderInfo`集合.
+2. 调用`ActivityThread`的`installSystemProviders`,`ActivityThread`可以看作是进程的`Android`运行环境,那么`installSystemProviders`表示为进程安装`ContentProvider`.
+
+- `generateApplicationProvidersLocked`函数
+
+    ```Java
+    private final List<ProviderInfo> generateApplicationProvidersLocked(ProcessRecord app) {
+        List<ProviderInfo> providers = null;
+        try {
+            //向PKMS查询满足要求的ProviderInfo，最重要的查询条件包括：进程名和进程uid
+            ParceledListSlice<ProviderInfo> slice = AppGlobals.getPackageManager().
+                    queryContentProviders(app.processName, app.uid,
+                            STOCK_PM_FLAGS | PackageManager.GET_URI_PERMISSION_PATTERNS);
+            providers = slice != null ? slice.getList() : null;
+        } catch (RemoteException ex) {
+        }
+        int userId = app.userId;
+        if (providers != null) {
+            int N = providers.size();
+            //保证容器容量大小
+            app.pubProviders.ensureCapacity(N + app.pubProviders.size());
+            for (int i=0; i<N; i++) {
+                ProviderInfo cpi = (ProviderInfo)providers.get(i);
+                //是否为单例,如果是单例且用户不相同就要剔除掉
+                boolean singleton = isSingleton(cpi.processName, cpi.applicationInfo,
+                        cpi.name, cpi.flags);
+                if (singleton && UserHandle.getUserId(app.uid) != UserHandle.USER_OWNER) {
+                    providers.remove(i);
+                    N--;
+                    i--;
+                    continue;
+                }
+                ComponentName comp = new ComponentName(cpi.packageName, cpi.name);
+                ContentProviderRecord cpr = mProviderMap.getProviderByClass(comp, userId);
+                if (cpr == null) {
+                    cpr = new ContentProviderRecord(this, cpi, app.info, comp, singleton);
+                    //保存到AMS的mProviderMap集合中
+                    mProviderMap.putProviderByClass(comp, cpr);
+                }
+                //将信息也保存到ProcessRecord中
+                app.pubProviders.put(cpi.name, cpr);
+                if (!cpi.multiprocess || !"android".equals(cpi.packageName)) {
+                    //保存PackageName到ProcessRecord中
+                    //如果是被多个进程使用的框架层的东西就不用保存了
+                    app.addPackage(cpi.applicationInfo.packageName, cpi.applicationInfo.versionCode,
+                                mProcessStats);
+                }
+                //对该APK进行dex优化
+                ensurePackageDexOpt(cpi.applicationInfo.packageName);
+            }
+        }
+        return providers;
+    }
+    ```
+    由此可知:`generateApplicationProvidersLocked`先从PKMS那里查询满足条件的`ProviderInfo`信息,而后将它们分别保存到AMS和`ProcessRecord`中对应的数据结构中.
+    - 先看查询函数`queryContentProviders`
+    ```Java
+    public ParceledListSlice<ProviderInfo> queryContentProviders(String processName,
+            int uid, int flags) {
+        ArrayList<ProviderInfo> finalList = null;
+        synchronized (mPackages) {
+            //mProviders.mProviders以ComponentName为key，保存了
+            //PKMS扫描APK得到的PackageParser.Provider信息
+            final Iterator<PackageParser.Provider> i = mProviders.mProviders.values().iterator();
+            final int userId = processName != null ?
+                    UserHandle.getUserId(uid) : UserHandle.getCallingUserId();
+            while (i.hasNext()) {
+                final PackageParser.Provider p = i.next();
+                PackageSetting ps = mSettings.mPackages.get(p.owner.packageName);
+                //下面的if语句将从这些Provider中搜索本例设置的processName为“system”，
+                //uid为SYSTEM_UID，flags为FLAG_SYSTEM的Provider
+                if (ps != null && p.info.authority != null
+                        && (processName == null
+                                || (p.info.processName.equals(processName)
+                                        && UserHandle.isSameApp(p.info.applicationInfo.uid, uid)))
+                        && mSettings.isEnabledLPr(p.info, flags, userId)
+                        && (!mSafeMode
+                                || (p.info.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0)) {
+                    //初始化集合
+                    if (finalList == null) {
+                        finalList = new ArrayList<ProviderInfo>(3);
+                    }
+                    //通过PackageParser.Provider得到对应的ProviderInfo信息
+                    ProviderInfo info = PackageParser.generateProviderInfo(p, flags,
+                            ps.readUserState(userId), userId);
+                    //添加到集合中
+                    if (info != null) {
+                        finalList.add(info);
+                    }
+                }
+            }
+        }
+        if (finalList != null) {
+            //最终结果按provider的initOrder排序，该值用于表示初始化ContentProvider的顺序
+            Collections.sort(finalList, mProviderInitOrderSorter);
+            return new ParceledListSlice<ProviderInfo>(finalList);
+        }
+        return null;
+    }
+    ```
+    从`SettingsProvider`的`AndroidManifest.xml`中可知:
+    ```Xml
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="com.android.providers.settings"
+        coreApp="true"
+        android:sharedUserId="android.uid.system">
+        <application android:allowClearUserData="false"
+                     android:label="@string/app_label"
+                     android:process="system"
+                     android:backupAgent="SettingsBackupAgent"
+                     android:killAfterRestore="false"
+                     android:icon="@mipmap/ic_launcher_settings">
+            <provider android:name="SettingsProvider"             android:authorities="settings"
+                  android:multiprocess="false"
+                  android:exported="true"
+                  android:singleUser="true"
+                  android:initOrder="100" />
+        </application>
+    </manifest>
+    ```
+    - `SettingsProvider`设置了其`uid`为`android.uid.system`,同时在`application`中设置了`process`名为`system`.
+    - 在`framework-res.apk`中也做了相同的设置
+    - `SystemServer`的很多`Service`都依赖`Settings`数据库,把它们放在同一个进程中,可以降低由于进程间通信带来的效率损失.
+
+- `ActivityThread` 的`installSystemProviders`函数
+    在AMS和`ProcessRecord`中都保存了`Provider`信息,下面要创建一个`ContentProvider`实例(即`SettingsProvider`对象).该工作由`ActivityThread`的`installSystemProviders`来完成
     
-
-
-
+    ```Java
+    public final void installSystemProviders(List<ProviderInfo> providers) {
+        if (providers != null) {
+            installContentProviders(mInitialApplication, providers);
+        }
+    }
+    ```
+    - `installContentProviders`这个函数是所有`ContentProvider`产生的必经之路
     
+    ```Java
+    private void installContentProviders(
+            Context context, List<ProviderInfo> providers) {
+        final ArrayList<IActivityManager.ContentProviderHolder> results =
+            new ArrayList<IActivityManager.ContentProviderHolder>();
+        for (ProviderInfo cpi : providers) {
+            //调用installProvider函数，得到一个ContentProviderHolder对象
+            IActivityManager.ContentProviderHolder cph = installProvider(context, null, cpi,
+                    false /*noisy*/, true /*noReleaseNeeded*/, true /*stable*/);
+            if (cph != null) {
+                cph.noReleaseNeeded = true;
+                //将对象保存到results中
+                results.add(cph);
+            }
+        }
+        try {
+            //调用AMS的publishContentProviders注册这些ContentProvider.
+            //第一个参数为ApplicationThread
+            ActivityManagerNative.getDefault().publishContentProviders(
+                getApplicationThread(), results);
+        } catch (RemoteException ex) {
+        }
+    }
+    ```
+    - `installProvider`函数
+    
+    ```Java
+    private IActivityManager.ContentProviderHolder installProvider(Context context,
+            IActivityManager.ContentProviderHolder holder, ProviderInfo info,
+            boolean noisy, boolean noReleaseNeeded, boolean stable) {
+        /*context= mInitialApplication
+         *holder = null
+         *info != null
+         *noisy = false
+         *noReleaseNeeded = true
+         *stable = true;
+         */
+        ContentProvider localProvider = null;
+        IContentProvider provider;
+        if (holder == null || holder.provider == null) {
+            Context c = null;
+            ApplicationInfo ai = info.applicationInfo;
+            /*
+             *下面这个判断是为该contentprovider找到对应的application
+             *ContentProvider和Application有一种对应关系
+             *本例中传入的context为framework-res.apk,contentprovider为SettingsProvider
+             *且对应的application未创建,所以走最后else分支
+             */
+            if (context.getPackageName().equals(ai.packageName)) {
+                c = context;
+            } else if (mInitialApplication != null &&
+                mInitialApplication.getPackageName().equals(ai.packageName)) {
+                c = mInitialApplication;
+            } else {
+                try {
+                    /*
+                     *ai.packageName应该是SettingsProvider.apk的Package
+                     *名为"com.android.providers.settings"
+                     *创建一个Context，指向该APK
+                     */
+                    c = context.createPackageContext(ai.packageName,
+                            Context.CONTEXT_INCLUDE_CODE);
+                } catch (PackageManager.NameNotFoundException e) {
+                    // Ignore
+                }
+            }
+            ...
+            /*
+             *只有对应的Context才能加载对应APK的Java字节码
+             *从而可通过反射机制生成ContentProvider实例
+             */
+            try {
+                final java.lang.ClassLoader cl = c.getClassLoader();
+                //通过Java反射机制得到真正的ContentProvider
+                //此处将得到一个SettingsProvider对象
+                localProvider = (ContentProvider)cl.
+                    loadClass(info.name).newInstance();
+                provider = localProvider.getIContentProvider();
+                ...
+                 //初始化该ContentProvider,内部会调用其onCreate函数
+                localProvider.attachInfo(c, info);
+            } catch (java.lang.Exception e) {
+                ...
+            }
+        } else {
+            provider = holder.provider;
+        }
+        IActivityManager.ContentProviderHolder retHolder;
+        synchronized (mProviderMap) {
+            IBinder jBinder = provider.asBinder();
+            if (localProvider != null) {
+                ComponentName cname = new ComponentName(info.packageName, info.name);
+                ProviderClientRecord pr = mLocalProvidersByName.get(cname);
+                if (pr != null) {
+                    provider = pr.mProvider;
+                } else {
+                        holder = new IActivityManager.ContentProviderHolder(info);
+                        holder.provider = provider;
+                        holder.noReleaseNeeded = true;
+                        //ContentProvider必须指明一个和多个authority
+                        //这个函数就是用来指定ContentProvider的位置
+                        pr = installProviderAuthoritiesLocked(provider, localProvider, holder);
+                        mLocalProviders.put(jBinder, pr);
+                        mLocalProvidersByName.put(cname, pr);
+                }
+                retHolder = pr.mHolder;
+            } else {
+                /*
+                 *mProviderRefCountMap,类型为HashMap<IBinder,ProviderRefCount>
+                 *主要通过ProviderRefCount对ContentProvider进行引用计数控制
+                 *一旦引用计数降为零,表示系统中没有地方使用该ContentProvider,要考虑从系统中注销它
+                 */
+                ...
+            }
+        }
+        return retHolder;
+    }
+    ```
+    - `ContentProvider`类本身只是一个容器,而跨进程调用的支持是通过内部类`Transport`实现的.
+    - `Transport`从`ContentProviderNative`派生,而`ContentProvider`的成员变量`mTransport`指向该`Transport`对象.
+    - `ContentProvider`的`getIContentProvider`函数即返回`mTransport`成员变量.
+    - `ContentProviderNative`从`Binder`派生,并实现了`IContentProvider`接口,其内部类`ContentProviderProxy`是供客户端使用的.
+    - `ProviderClientRecord`是`ActivityThread`提供的用于保存`ContentProvider`信息的一个数据结构
+        - `mLocalProvider`用于保存ContentProvider对象
+        - `mProvider`用于保存`IContentProvider`对象
+        - `mName`用于保存该`ContentProvider`的`authority`集合
+    
+- ASM的`publishContentProviders`函数
+    `publicContentProviders`函数用于向AMS注册`ContentProviders`
+    ```Java
+    public final void publishContentProviders(IApplicationThread caller,
+            List<ContentProviderHolder> providers) {
+        ...
+        synchronized (this) {
+            //找到调用者所在的ProcessRecord对象
+            final ProcessRecord r = getRecordForAppLocked(caller);
+            ...
+            final long origId = Binder.clearCallingIdentity();
+            final int N = providers.size();
+            for (int i=0; i<N; i++) {
+                ContentProviderHolder src = providers.get(i);
+                ...
+                //先从该ProcessRecord中找对应的ContentProviderRecord
+                ContentProviderRecord dst = r.pubProviders.get(src.info.name);
+                if (dst != null) {
+                    ComponentName comp = new ComponentName(dst.info.packageName, dst.info.name);
+                    //以ComponentName为key保存在mProviderMap
+                    mProviderMap.putProviderByClass(comp, dst);
+                    String names[] = dst.info.authority.split(";");
+                    for (int j = 0; j < names.length; j++) {
+                    //以authority不同的名字作为key保存到mProviderMap
+                        mProviderMap.putProviderByName(names[j], dst);
+                    }
+                    //mLaunchingProviders用于保存处于启动状态的Provider
+                    int NL = mLaunchingProviders.size();
+                    int j;
+                    for (j=0; j<NL; j++) {
+                        if (mLaunchingProviders.get(j) == dst) {
+                            mLaunchingProviders.remove(j);
+                            j--;
+                            NL--;
+                        }
+                    }
+                    synchronized (dst) {
+                        dst.provider = src.provider;
+                        dst.proc = r;
+                        dst.notifyAll();
+                    }
+                    //每发布一个Provider，需要调整对应进程的oom_adj
+                    updateOomAdjLocked(r);
+                    //判断是否需要更新provider的使用情况
+                    maybeUpdateProviderUsageStatsLocked(r, src.info.packageName,
+                            src.info.authority);
+                }
+            }
+            Binder.restoreCallingIdentity(origId);
+        }
+    }
+    ```
+    流程总结:
+    - 先根据调用者的`pid`找到对应的`ProcessRecord`对象.
+    - 该`ProcessRecord`的`pubProviders`中保存了`ContentProviderRecord`信息,该信息由前面介绍的AMS的`generateApplicationProvidersLocked`函数根据`Package`本身的信息生成,此处将判断要发布的ContentProvider是否由该Package声明.
+    - 如果判断返回成功,则将该`ContentProvider`以`ComponentName`为`key`存放到`mProviderMap`,后续再逐个通过`ContentProvider`的`authority`存放到`mProviderMap`.系统提供了多种方式来找到对应的`ContentProvider`
+    - `mLaunchingProviders`和最后的`notifyAll`函数用于通知那些等待`ContentProvider`所在进程启动的客户端进程
