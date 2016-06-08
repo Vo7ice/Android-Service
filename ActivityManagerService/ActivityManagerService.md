@@ -954,7 +954,7 @@ public final void installSystemProviders() {
         }
     }
     ```
-    1. `run`函数做了如下工作:
+    `run`函数做了如下工作:
     - 将`BootPhase`更新到`PHASE_THIRD_PARTY_APPS_CAN_START`状态
     - 执行了`startSystemUi`,内部启动了`SystemUIService`
     - 开启了`watchdog`
@@ -969,8 +969,11 @@ public final void installSystemProviders() {
     }
     ```
     `SystemUIService`由`SystemUi.apk`提供，它实现了系统的状态栏
-    2. 启动`home`界面
-    `ActivityStackSupervisor`的`resumeTopActivitiesLocked`
+    
+- 启动`home`界面
+
+    `ActivityStackSupervisor`的`resumeTopActivitiesLocked`函数
+
     ```Java
     boolean resumeTopActivitiesLocked() {
         return resumeTopActivitiesLocked(null, null, null);
@@ -1099,7 +1102,7 @@ public final void installSystemProviders() {
     }
     ```
     至此，AMS携各个`Service`都启动完毕，`Home`也启动了,整个系统就准备完毕.
-    3. 发送`ACTION_BOOT_COMPLETED`广播
+3. 发送`ACTION_BOOT_COMPLETED`广播
         
         系统准备好了,就要发送开机广播了.
         开机广播应用非常广泛,让我们看看在哪发送的.
