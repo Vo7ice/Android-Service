@@ -728,3 +728,431 @@ public final void installSystemProviders() {
     - 该`ProcessRecord`的`pubProviders`中保存了`ContentProviderRecord`信息,该信息由前面介绍的AMS的`generateApplicationProvidersLocked`函数根据`Package`本身的信息生成,此处将判断要发布的ContentProvider是否由该Package声明.
     - 如果判断返回成功,则将该`ContentProvider`以`ComponentName`为`key`存放到`mProviderMap`,后续再逐个通过`ContentProvider`的`authority`存放到`mProviderMap`.系统提供了多种方式来找到对应的`ContentProvider`
     - `mLaunchingProviders`和最后的`notifyAll`函数用于通知那些等待`ContentProvider`所在进程启动的客户端进程
+
+## ASM的`systemReady`函数
+`systemReady`函数比较复杂,会分为三部分.
+## 第一部分工作:
+- 第一部分代码:
+    ```Java
+    public void systemReady(final Runnable goingCallback) {
+        //开机闹钟,ANR设置,最近开启的apk
+        ...
+        synchronized(this) {
+            if (!mDidUpdate) {//判断是否为升级
+                if (mWaitingUpdate) {
+                    return; //升级未完成，直接返回
+                }
+                final ArrayList<ComponentName> doneReceivers = new ArrayList<ComponentName>();
+                mWaitingUpdate = deliverPreBootCompleted(new Runnable() {
+                    public void run() {
+                        synchronized (ActivityManagerService.this) {
+                            mDidUpdate = true;
+                        }
+                        showBootMessage(mContext.getText(
+                                    R.string.android_upgrading_complete),
+                                    false);
+                            writeLastDonePreBootReceivers(doneReceivers);
+                            systemReady(goingCallback);
+                        }
+                    }, doneReceivers, UserHandle.USER_OWNER);
+                if (mWaitingUpdate) {
+                    return;
+                }
+                mDidUpdate = true;
+            }
+    
+            mAppOpsService.systemReady();
+            mSystemReady = true;
+        }
+    ```
+    - `deliverPreBootCompleted`函数
+    ```Java
+    private boolean deliverPreBootCompleted(final Runnable onFinishCallback,
+            ArrayList<ComponentName> doneReceivers, int userId) {
+        //准备PRE_BOOT_COMPLETED广播
+        Intent intent = new Intent(Intent.ACTION_PRE_BOOT_COMPLETED);
+        List<ResolveInfo> ris = null;
+        try {
+            //向PKMS查询该广播的接收者
+            ris = AppGlobals.getPackageManager().queryIntentReceivers(
+                    intent, null, 0, userId);
+        } catch (RemoteException e) {
+        }
+        if (ris == null) {
+            return false;
+        }
+        //从返回的结果中删除那些非系统APK的广播接收者
+        for (int i=ris.size()-1; i>=0; i--) {
+            if ((ris.get(i).activityInfo.applicationInfo.flags
+                    &ApplicationInfo.FLAG_SYSTEM) == 0) {
+                ris.remove(i);
+            }
+        }
+        intent.addFlags(Intent.FLAG_RECEIVER_BOOT_UPGRADE);
+        if (userId == UserHandle.USER_OWNER) {
+            //读取/data/system/called_pre_boots.dat文件,这里存储了上次启动时候已经
+            //并处理PRE_BOOT_COMPLETED广播的组件。鉴于该广播的特殊性，系统希望
+            //该广播仅被这些接收者处理一次
+            ArrayList<ComponentName> lastDoneReceivers = readLastDonePreBootReceivers();
+            //从PKMS返回的接收者中删除那些已经处理过该广播的对象
+            for (int i=0; i<ris.size(); i++) {
+                ActivityInfo ai = ris.get(i).activityInfo;
+                ComponentName comp = new ComponentName(ai.packageName, ai.name);
+                if (lastDoneReceivers.contains(comp)) {
+                    ris.remove(i);
+                    i--;
+                    doneReceivers.add(comp);
+                }
+            }
+        }
+        if (ris.size() <= 0) {
+            return false;
+        }
+        final int[] users = userId == UserHandle.USER_OWNER ? getUsersLocked()
+                : new int[] { userId };
+        if (users.length <= 0) {
+            return false;
+        }
+        //保存那些处理过该广播的接收者信息
+        //发送广播给指定的接收者
+        //最后回调onFinishCallback
+        PreBootContinuation cont = new PreBootContinuation(intent, onFinishCallback, doneReceivers,
+                ris, users);
+        cont.go();
+        return true;
+    }
+    ```
+    第一阶段完结,其主要职责是发送并处理与`PRE_BOOT_COMPLETED`广播相关的事情.
+## 第二部分工作:
+- 第二部分代码
+
+    ```Java
+    ArrayList<ProcessRecord> procsToKill = null;
+        synchronized(mPidsSelfLocked) {
+            for (int i=mPidsSelfLocked.size()-1; i>=0; i--) {
+                ProcessRecord proc = mPidsSelfLocked.valueAt(i);
+                //从mPidsSelfLocked中找到那些先于AMS启动的进程
+                //那些声明了persistent为true的进程有可能
+                if (!isAllowedWhileBooting(proc.info)){
+                    if (procsToKill == null) {
+                        procsToKill = new ArrayList<ProcessRecord>();
+                    }
+                    procsToKill.add(proc);
+                }
+            }
+        }
+        synchronized(this) {
+            if (procsToKill != null) {
+                for (int i=procsToKill.size()-1; i>=0; i--) {
+                    ProcessRecord proc = procsToKill.get(i);
+                    Slog.i(TAG, "Removing system update proc: " + proc);
+                    //把这些进程关闭
+                    removeProcessLocked(proc, true, false, "system update done");
+                }
+            }
+            //系统准备完毕
+            mProcessesReady = true;
+        }
+        ...//工厂测试相关
+        retrieveSettings();//查询Settings数据,获得配置信息
+        loadResourcesOnSystemReady();//加载资源,必须在config获取后
+    ```
+总结:
+- 杀死那些竟然在AMS还未启动完毕就先启动的应用进程.(只有应用程序才会经过AMS,`Native`进程不经过AMS)
+- 从`Settings`数据库中获取配置信息,主要获取如下信息
+    - debug_app (设置需要debug的app的名称)
+    - waitForDebugger (如果为1，则等待调试器，否则正常启动debug_app)
+    - alwaysFinishActivities (当一个activity不再有地方使用时，是否立即对它执行destroy)
+    - forceRtl (从右向左语言判断)
+    - configuration(包括字体大小,语言,地区等)
+- 加载资源
+    - mHasRecents (是否存在最近活动的UI)
+    - mThumbnailWidth (最近活动UI的宽度)
+    - mThumbnailHeight (最近活动UI的高度)
+
+## 第三部分工作
+- 第三部分代码
+    ```Java
+    //systemReady参数,一个线程
+    if (goingCallback != null) goingCallback.run();
+    //多用户的电池损耗情况
+    mBatteryStatsService.noteEvent(BatteryStats.HistoryItem.EVENT_USER_RUNNING_START,
+        Integer.toString(mCurrentUserId), mCurrentUserId);
+    mBatteryStatsService.noteEvent(BatteryStats.HistoryItem.EVENT_USER_FOREGROUND_START,
+        Integer.toString(mCurrentUserId), mCurrentUserId);
+    mSystemServiceManager.startUser(mCurrentUserId);
+    synchronized (this) {
+        if (mFactoryTest != FactoryTest.FACTORY_TEST_LOW_LEVEL) {
+            try {
+                //从PKMS中查询那些persistent为1的ApplicationInfo
+                List apps = AppGlobals.getPackageManager().
+                    getPersistentApplications(STOCK_PM_FLAGS);
+                if (apps != null) {
+                    int N = apps.size();
+                    int i;
+                    for (i=0; i<N; i++) {
+                        ApplicationInfo info                                = (ApplicationInfo)apps.get(i);
+                        //由于framework-res.apk已由系统启动,所以这里需要去除掉它
+                        //framework-res.apk的包名为"android"
+                        if (info != null &&
+                                !info.packageName.equals("android")) {
+                            //启动该Application所在的进程
+                            addAppLocked(info, false, null /* ABI override */);
+                        }
+                    }
+                }
+            } catch (RemoteException ex) {
+                // pm is in same process, this will never happen.
+            }
+        }
+        mBooting = true;//设置mBooting变量为true
+        try {
+            if (AppGlobals.getPackageManager().hasSystemUidErrors()) {
+                Slog.e(TAG, "UIDs on the system are inconsistent, you need to wipe your"
+                        + " data partition or your device will be unstable.");
+                //处理那些Uid有错误的Application
+                mUiHandler.obtainMessage(SHOW_UID_ERROR_MSG).sendToTarget();
+            }
+        } catch (RemoteException e) {
+        }
+        //发送了两个系统广播
+        //ACTION_USER_STARTED 用户启动
+        //ACTION_USER_STARTING  用户正在启动
+        ...
+        //启动全系统第一个Activity，即Home
+        mStackSupervisor.resumeTopActivitiesLocked();
+    ```
+    `systemReady`第三阶段的工作：
+    - 调用`systemReady`设置的回调对象`goingCallback`的run函数
+    - 启动那些声明了`persistent`的APK
+    - 发送了用户广播
+    - 启动桌面
+  
+- `goingCallback`的run函数
+
+    `SystemServer`中`startOtherServices`函数会调用AMS的`SystemReady`函数並传入`goingCallBack`的回调.代码如下:
+    ```Java
+    mActivityManagerService.systemReady(new Runnable() {
+            @Override
+            public void run() {
+                ...
+                //Boot状态更换,AMA准备好了
+                mSystemServiceManager.startBootPhase(
+                        SystemService.PHASE_ACTIVITY_MANAGER_READY);
+                try {
+                    //启动SystemUi
+                    startSystemUi(context);
+                } catch (Throwable e) {
+                    reportWtf("starting System UI", e);
+                }
+                ...//调用其他服务的systemReady函数
+                Watchdog.getInstance().start();//启动Watchdog
+                //Boot状态更换,第三方应用可以开启
+                mSystemServiceManager.startBootPhase(
+                        SystemService.PHASE_THIRD_PARTY_APPS_CAN_START);
+                ...//调用其他服务的systemRunning函数
+        }
+    }
+    ```
+    1. `run`函数做了如下工作:
+    - 将`BootPhase`更新到`PHASE_THIRD_PARTY_APPS_CAN_START`状态
+    - 执行了`startSystemUi`,内部启动了`SystemUIService`
+    - 开启了`watchdog`
+    - 调用了一些服务的`systemReady`和`systemRunning`
+    开启`SystemUi`代码:
+    ```Java
+    static final void startSystemUi(Context context) {
+        Intent intent = new Intent();
+        intent.setComponent(new ComponentName("com.android.systemui",
+                    "com.android.systemui.SystemUIService"));
+        context.startServiceAsUser(intent, UserHandle.OWNER);
+    }
+    ```
+    `SystemUIService`由`SystemUi.apk`提供，它实现了系统的状态栏
+    2. 启动`home`界面
+    `ActivityStackSupervisor`的`resumeTopActivitiesLocked`
+    ```Java
+    boolean resumeTopActivitiesLocked() {
+        return resumeTopActivitiesLocked(null, null, null);
+    }
+    ```
+    调用了有参数的`resumeTopActivitiesLocked`且参数为空
+    ```Java
+    boolean resumeTopActivitiesLocked(ActivityStack targetStack, ActivityRecord target,
+            Bundle targetOptions) {
+        if (targetStack == null) {
+            targetStack = mFocusedStack;
+        }
+        ...
+        //判断了targetStack == mFocusedStack
+        if (isFrontStack(targetStack)) {
+            result = targetStack.resumeTopActivityLocked(target, targetOptions);
+        }
+        ...
+        return result;
+    }
+    ```
+    调用了`ActivityStack`的`resumeTopActivityLocked`函数
+    ```Java
+    try {
+        //更改标志
+        // Protect against recursion.
+        mStackSupervisor.inResumeTopActivity = true;
+        //判断是否需要锁屏
+        if (mService.mLockScreenShown == ActivityManagerService.LOCK_SCREEN_LEAVING) {
+            mService.mLockScreenShown = ActivityManagerService.LOCK_SCREEN_HIDDEN;
+            mService.updateSleepIfNeededLocked();
+        }
+        result = resumeTopActivityInnerLocked(prev, options);
+    } finally {
+        mStackSupervisor.inResumeTopActivity = false;
+    }
+    ```
+    调用`resumeTopActivityInnerLocked`函数
+    ```Java
+    ...
+    // Find the first activity that is not finishing.
+    final ActivityRecord next = topRunningActivityLocked(null);
+    final boolean userLeaving = mStackSupervisor.mUserLeaving;
+    mStackSupervisor.mUserLeaving = false;
+    final TaskRecord prevTask = prev != null ? prev.task : null;
+    if (next == null) {
+        final String reason = "noMoreActivities";
+        final int returnTaskType = prevTask == null || !prevTask.isOverHomeStack() ?
+                    HOME_ACTIVITY_TYPE : prevTask.getTaskToReturnTo();
+        ...
+        return isOnHomeDisplay() &&
+                    mStackSupervisor.resumeHomeStackTask(returnTaskType, prev, reason);
+    }
+    ...
+    ```
+    由于参数`prev`和`options`为空, 所以调用`StackSupervisor`的`resumeHomeStackTask`函数
+    参数列表
+    - `returnTaskType` = `HOME_ACTIVITY_TYPE`
+    - `prev` = `null`
+    - `reason` = `noMoreActivities`
+    ```Java
+    boolean resumeHomeStackTask(int homeStackTaskType, ActivityRecord prev, String reason) {
+        ...
+        mHomeStack.moveHomeStackTaskToTop(homeStackTaskType);
+        //homeActivity还没打开,所以r = null
+        ActivityRecord r;
+        if (mService.mBooting) {
+            r = getRunningHomeActivityForUser(mCurrentUser);
+        } else {
+            r = getHomeActivity();
+        }
+        if (r != null) {
+            mService.setFocusedActivityLocked(r, reason);
+            return resumeTopActivitiesLocked(mHomeStack, prev, null);
+        }
+        //由于为空 调用startHomeActivityLocked
+        //mService指向AMS
+        return mService.startHomeActivityLocked(mCurrentUser, reason);
+    }
+    ```
+    调用了AMS的`startHomeActivityLocked`函数,和开机闹钟殊途同归了
+    AMS的`startHomeActivityLocked`函数
+    ```Java
+    boolean startHomeActivityLocked(int userId, String reason) {
+        //获得桌面的intent
+        Intent intent = getHomeIntent();
+        //向PKMS查询满足条件的ActivityInfo
+        ActivityInfo aInfo =
+            resolveActivityInfo(intent, STOCK_PM_FLAGS, userId);
+        if (aInfo != null) {
+            intent.setComponent(new ComponentName(
+                    aInfo.applicationInfo.packageName, aInfo.name));
+            aInfo = new ActivityInfo(aInfo);
+            aInfo.applicationInfo = getAppInfoForUser(aInfo.applicationInfo, userId);
+            ProcessRecord app = getProcessRecordLocked(aInfo.processName,
+                    aInfo.applicationInfo.uid, true);
+             //在正常情况下，app应该为null，因为刚开机，Home进程肯定还没启动
+            if (app == null || app.instrumentationClass == null) {
+                intent.setFlags(intent.getFlags() | Intent.FLAG_ACTIVITY_NEW_TASK);
+                //启动Home
+                mStackSupervisor.startHomeActivity(intent, aInfo, reason);
+            }
+        }
+        return true;
+    }
+    ```
+    `StackSupervisor`的`startHomeActivity`函数
+    ```Java
+    void startHomeActivity(Intent intent, ActivityInfo aInfo, String reason) {
+        //将home移到顶部
+        moveHomeStackTaskToTop(HOME_ACTIVITY_TYPE, reason);
+        //开启home
+        startActivityLocked(null /* caller */, intent, null /* resolvedType */, aInfo,
+                null /* voiceSession */, null /* voiceInteractor */, null /* resultTo */,
+                null /* resultWho */, 0 /* requestCode */, 0 /* callingPid */, 0 /* callingUid */,
+                null /* callingPackage */, 0 /* realCallingPid */, 0 /* realCallingUid */,
+                0 /* startFlags */, null /* options */, false /* ignoreTargetSecurity */,
+                false /* componentSpecified */,
+                null /* outActivity */, null /* container */,  null /* inTask */);
+        if (inResumeTopActivity) {
+            // If we are in resume section already, home activity will be initialized, but not
+            // resumed (to avoid recursive resume) and will stay that way until something pokes it
+            // again. We need to schedule another resume.
+            scheduleResumeTopActivities();
+        }
+    }
+    ```
+    至此，AMS携各个`Service`都启动完毕，`Home`也启动了,整个系统就准备完毕.
+    3. 发送`ACTION_BOOT_COMPLETED`广播
+        
+        系统准备好了,就要发送开机广播了.
+        开机广播应用非常广泛,让我们看看在哪发送的.
+        当`Home Activity`启动后，`ActivityStackSupervisor`的`activityIdleInternalLocked`函数将被调用
+        ```Java
+        final ActivityRecord activityIdleInternalLocked(final IBinder token, boolean fromTimeout,
+            Configuration config) {
+            ...
+            ActivityRecord r = ActivityRecord.forTokenLocked(token);
+        if (r != null) {
+            ...
+            if (isFrontStack(r.task.stack) || fromTimeout) {
+                booting = checkFinishBootingLocked();
+            }
+        }
+        ```
+        `checkFinishBootingLocked`函数是用来确定是否开机完成
+        ```Java
+        private boolean checkFinishBootingLocked() {
+            //在systemReady中设置为true
+            final boolean booting = mService.mBooting;
+            boolean enableScreen = false;
+            mService.mBooting = false;
+            if (!mService.mBooted) {
+                mService.mBooted = true;
+                enableScreen = true;
+            }
+            if (booting || enableScreen) {
+            //booting = true enableScreen = true
+                mService.postFinishBooting(booting, enableScreen);
+            }
+            return booting;
+        }
+        ```
+        发消息`postFinishBooting`.
+        ```Java
+        void postFinishBooting(boolean finishBooting, boolean enableScreen) {
+            //两个值均为1
+            mHandler.sendMessage(mHandler.obtainMessage(FINISH_BOOTING_MSG,
+                finishBooting ? 1 : 0, enableScreen ? 1 : 0));
+        }
+        ```
+        看如何处理消息的
+        ```Java
+        case FINISH_BOOTING_MSG: {
+            if (msg.arg1 != 0) {
+                finishBooting();
+            }
+            if (msg.arg2 != 0) {
+                enableScreenAfterBoot();
+            }
+                break;
+        }
+        ```
+        `finishBooting`就是来发送开机完成广播的
+        
