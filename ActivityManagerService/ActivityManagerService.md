@@ -1158,4 +1158,247 @@ public final void installSystemProviders() {
         }
         ```
         `finishBooting`就是来发送开机完成广播的
+        ```Java
+        final void finishBooting() {
+            //确保已经播完开机动画了
+            //确保已经开机完成了
+            ...
+            //防止在闹钟沉睡后再做odex
+            markBootComplete();
+            //处理Package重启的广播
+            IntentFilter pkgFilter = new IntentFilter();
+            pkgFilter.addAction(Intent.ACTION_QUERY_PACKAGE_RESTART);
+            pkgFilter.addDataScheme("package");
+            mContext.registerReceiver(new BroadcastReceiver() {
+                ...
+            }
+            //决定什么时候删除无用内存
+            IntentFilter dumpheapFilter = new IntentFilter();
+            dumpheapFilter.addAction(DumpHeapActivity.ACTION_DELETE_DUMPHEAP);
+            mContext.registerReceiver(new BroadcastReceiver() {
+            ...
+            }
+            //让system service知道
+            mSystemServiceManager.startBootPhase(SystemService.PHASE_BOOT_COMPLETED);
+            //避免执行addBootEvent来提高性能
+            mBootProfIsEnding = true;
+            synchronized (this) {
+                final int NP = mProcessesOnHold.size();
+            if (NP > 0) {
+                ArrayList<ProcessRecord> procs =
+                    new ArrayList<ProcessRecord>(mProcessesOnHold);
+                for (int ip=0; ip<NP; ip++) {
+                    //启动那些等待启动的进程 
+                    startProcessLocked(procs.get(ip), "on-hold", null);
+                }
+            }
+            if (mFactoryTest != FactoryTest.FACTORY_TEST_LOW_LEVEL) {
+                //每15钟检查系统各应用进程使用电量的情况,如果某进程使用WakeLock时间
+                //过长,AMS将关闭该进程
+                Message nmsg = mHandler.obtainMessage(CHECK_EXCESSIVE_WAKE_LOCKS_MSG);
+                mHandler.sendMessageDelayed(nmsg, POWER_CHECK_DELAY);
+                //设置系统属性sys.boot_completed的值为1
+                SystemProperties.set("sys.boot_completed", "1");
+                //多用户发送开机完成广播
+                for (int i=0; i<mStartedUsers.size(); i++) {
+                    UserState uss = mStartedUsers.valueAt(i);
+                    if (uss.mState == UserState.STATE_BOOTING) {
+                        uss.mState = UserState.STATE_RUNNING;
+                        final int userId = mStartedUsers.keyAt(i);
+                        Intent intent = new Intent(Intent.ACTION_BOOT_COMPLETED, null);
+                        intent.putExtra(Intent.EXTRA_USER_HANDLE, userId);
+                        intent.addFlags(Intent.FLAG_RECEIVER_NO_ABORT);
+                        broadcastIntentLocked(null, null, intent, null,
+                            new IIntentReceiver.Stub() {
+                                    @Override
+                                    public void performReceive(Intent intent, int resultCode,
+                                            String data, Bundle extras, boolean ordered,
+                                            boolean sticky, int sendingUser) {
+                                        synchronized (ActivityManagerService.this) {
+                                            requestPssAllProcsLocked(SystemClock.uptimeMillis(),
+                                                    true, false);)
+                                            mAmPlus.monitorBootReceiver(false, "Normal Bootup End");
+                                        }
+                                    }
+                                },
+                                0, null, null,
+                                new String[] {android.Manifest.permission.RECEIVE_BOOT_COMPLETED},
+                                AppOpsManager.OP_NONE, null, true, false,
+                                MY_PID, Process.SYSTEM_UID, userId);
+                        }
+                    }
+                    scheduleStartProfilesLocked();
+                }
+                //确保只开机一次
+                mDoneFinishBooting = true;
+            }
+            //做一些记录工作
+            ...
+        }
+        ```
+    4. `systemReady`总结
+        `systemReady`函数完成了系统就绪的必要工作,然后它将启动`Home Activity`.至此,`Android系统`就全部启动了.
+    
+## `ActivityManagerService`初始化总结
+- AMS的`构造函数`:获得`ActivityThread`对象,通过该对象创建`Android运行环境`,得到一个`ActivityThread`和一个`Context对象`.
+- AMS的`setSystemProcess`函数:注册AMS和`meminfo`等服务到`ServiceManager`中.另外,它为`SystemServer`创建了一个`ProcessRecord`对象,便于管理`SystemServer`系统进程
+- AMS的`installSystemProviders`函数:为`SystemServer`加载`SettingsProvider`
+- AMS的`systemReady`函数:做系统启动完毕前最后一些扫尾工作
+
+## `startActivity`流程
+在这里,主要讲述的是从`am`来启动`Activity`的过程,从`am`来分析`Activity`的启动也是`Activity`启动分析中相对简单的一条路线
+1. `AM`的工作:
+    通过`AM`启动`Activity`中依次调用了`run(args)`,`onRun()`,`runStart()`,根最后同`AMS`交互,根据是否有参数`-W`来判断是调用`AMS`的`startActivityAndWait`还是调用`AMS`的`startActivityAsUser`来处理`Activity`启动请求
+2. `AMS`处理请求
+    无论是否有`-W`参数,都会调用`ActivityStackSupervisor`的`startActivityMayWait`函数
+3. `ActivityStackSupervisor`的`startActivityMayWait`
+    ```Java
+    final int startActivityMayWait(
+            /*
+             *在绝大多数情况下,一个Acitivity的启动是由一个应用进程发起的
+             *IApplicationThread是应用进程和AMS交互的通道,也可算是调用进程的标示
+             *在本例中,AM并非一个应用进程,所以传递的caller为null
+             */
+            IApplicationThread caller,
+            /*调用进程的uid*/
+            int callingUid,
+            /*调用包名*/
+            String callingPackage, 
+            /*intent和resolvedType,这里resolvedType = null*/
+            Intent intent, 
+            String resolvedType,
+            /*这里为null*/
+            IVoiceInteractionSession voiceSession, 
+            IVoiceInteractor voiceInteractor,
+            /*在这里为null,用于接收startActivityForResult的结果*/
+            IBinder resultTo,
+            /*在本例中为null*/
+            String resultWho,
+            /*在本例中为0,该值的具体意义由调用者解释.如果该值大于等于0，则AMS内部保存该值
+             *并通过onActivityResult返回给调用者
+             */
+            int requestCode,
+            /*1<<1 debug
+             *1<<2 openGL 跟踪
+             */
+            int startFlags,
+            /*参数为空*/
+            ProfilerInfo profilerInfo,
+            /*保存的信息*/
+            WaitResult outResult, 
+            /*配置信息,这里为null*/
+            Configuration config,
+            /*这里为null*/
+            Bundle options, 
+            /*这里为false*/
+            boolean ignoreTargetSecurity,
+            /*用户*/
+            int userId,
+            /*这里为null*/
+            IActivityContainer iContainer,
+            /*这里为null*/
+            TaskRecord inTask
+            ) {
+        ...
+        //getComponent不为空 所以为true
+        boolean componentSpecified = intent.getComponent() != null;
+        //不要修改原来的对象
+        intent = new Intent(intent);
+        //查询满足条件的ActivityInfo,在resolveActivity内部和PKMS交互
+        ActivityInfo aInfo =
+                resolveActivity(intent, resolvedType, startFlags, profilerInfo, userId);
+        ActivityContainer container = (ActivityContainer)iContainer;
+        synchronized (mService) {
+            final int realCallingPid = Binder.getCallingPid();//取出调用进程的Pid
+            final int realCallingUid = Binder.getCallingUid();//取出调用进程的Uid
+            int callingPid;
+            if (callingUid >= 0) {
+                callingPid = -1;
+            } else if (caller == null) {//在这里 caller为null
+                callingPid = realCallingPid;
+                callingUid = realCallingUid;
+            } else {
+                callingPid = callingUid = -1;
+            }
+            //判断需要将activity保存到哪个stack中.
+            //mFocusedStack保存除桌面以外的应用的activity
+            final ActivityStack stack;
+            if (container == null || container.mStack.isOnHomeDisplay()) {
+                stack = mFocusedStack;
+            } else {
+                stack = container.mStack;
+            }
+            //mConfigWillChange为false,不用调用updateConfiguration
+            stack.mConfigWillChange = config != null && mService.mConfiguration.diff(config) != 0;
+            /*解析HeavyWeightProcess*/
+            ...
+             //调用此函数启动Activity,将返回值保存到res
+            int res = startActivityLocked(caller, intent, resolvedType, aInfo,
+                    voiceSession, voiceInteractor, resultTo, resultWho,
+                    requestCode, callingPid, callingUid, callingPackage,
+                    realCallingPid, realCallingUid, startFlags, options, ignoreTargetSecurity,
+                    componentSpecified, null, container, inTask);
+            //如果configuration发生变化,则调用AMS的updateConfigurationLocked
+            if (stack.mConfigWillChange) {
+                mService.enforceCallingPermission(android.Manifest.permission.CHANGE_CONFIGURATION,
+                        "updateConfiguration()");
+                stack.mConfigWillChange = false;
+                mService.updateConfigurationLocked(config, null, false, false);
+            }
+            if (outResult != null) {//-W才会进入此分支
+                outResult.result = res;//设置启动结果
+                if (res == ActivityManager.START_SUCCESS) {
+                    //将该结果加到mWaitingActivityLaunched中保存
+                    mWaitingActivityLaunched.add(outResult);
+                    do {
+                        try {
+                            mService.wait();//等待启动结果
+                        } catch (InterruptedException e) {
+                        }
+                    } while (!outResult.timeout && outResult.who == null);
+                } else if (res == ActivityManager.START_TASK_TO_FRONT) {
+                    //找到下一个要启动的Activity
+                    ActivityRecord r = stack.topRunningActivityLocked(null);
+                    //判断状态是否可见和是否在resume状态,是就直接显示
+                    if (r.nowVisible && r.state == RESUMED) {
+                        outResult.timeout = false;
+                        outResult.who = new ComponentName(r.info.packageName, r.info.name);
+                        outResult.totalTime = 0;
+                        outResult.thisTime = 0;
+                    } else {
+                        //加入到mWaitingActivityVisible中
+                        outResult.thisTime = SystemClock.uptimeMillis();
+                        mWaitingActivityVisible.add(outResult);
+                        do {
+                            try {
+                                mService.wait();//等待启动结果
+                            } catch (InterruptedException e) {
+                            }
+                        } while (!outResult.timeout && outResult.who == null);
+                    }
+                }
+            }
+
+            return res;
+        }
+    }
+    ```
+    `startActivityMayWait`主要工作为:
+    
+    - 需要通过`PKMS`查找匹配该`Intent`的`ActivityInfo`
+    - 处理`FLAG_CANT_SAVE_STATE`的情况
+    - 获取调用者的pid和uid
+    - 启动`Activity`的核心函数`startActivityLocked`
+    - 根据返回值做一些处理.目标`Activity`要运行在一个新的应用进程中,就必须等待那个应用进程正常启动并处理相关请求(只有am设置了-W选项,才会进入wait这一状态)
+4. 核心函数`startActivityLocked`
+    ```Java
+    final int startActivityLocked(IApplicationThread caller,
+            Intent intent, String resolvedType, ActivityInfo aInfo,
+            IVoiceInteractionSession voiceSession, IVoiceInteractor voiceInteractor,
+            IBinder resultTo, String resultWho, int requestCode,
+            int callingPid, int callingUid, String callingPackage,
+            int realCallingPid, int realCallingUid, int startFlags, Bundle options,
+            boolean ignoreTargetSecurity, boolean componentSpecified, ActivityRecord[] outActivity,
+            ActivityContainer container, TaskRecord inTask) {
+        int err = ActivityManager.START_SUCCESS;
         
