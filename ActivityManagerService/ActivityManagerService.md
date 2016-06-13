@@ -1247,11 +1247,15 @@ public final void installSystemProviders() {
 
 ## `startActivity`流程
 在这里,主要讲述的是从`am`来启动`Activity`的过程,从`am`来分析`Activity`的启动也是`Activity`启动分析中相对简单的一条路线
+
 1. `AM`的工作:
     通过`AM`启动`Activity`中依次调用了`run(args)`,`onRun()`,`runStart()`,根最后同`AMS`交互,根据是否有参数`-W`来判断是调用`AMS`的`startActivityAndWait`还是调用`AMS`的`startActivityAsUser`来处理`Activity`启动请求
+
 2. `AMS`处理请求
     无论是否有`-W`参数,都会调用`ActivityStackSupervisor`的`startActivityMayWait`函数
+
 3. `ActivityStackSupervisor`的`startActivityMayWait`
+    
     ```Java
     final int startActivityMayWait(
             /*
@@ -1390,7 +1394,9 @@ public final void installSystemProviders() {
     - 获取调用者的pid和uid
     - 启动`Activity`的核心函数`startActivityLocked`
     - 根据返回值做一些处理.目标`Activity`要运行在一个新的应用进程中,就必须等待那个应用进程正常启动并处理相关请求(只有am设置了-W选项,才会进入wait这一状态)
+    
 4. 核心函数`startActivityLocked`
+    
     ```Java
     final int startActivityLocked(IApplicationThread caller,
             Intent intent, String resolvedType, ActivityInfo aInfo,
