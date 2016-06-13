@@ -1402,3 +1402,129 @@ public final void installSystemProviders() {
             ActivityContainer container, TaskRecord inTask) {
         int err = ActivityManager.START_SUCCESS;
         
+        ProcessRecord callerApp = null;
+        //如果caller不为空,需要通过AMS来获取它的ProcessRecord,这里为空
+        if (caller != null) {
+            callerApp = mService.getRecordForAppLocked(caller);
+            //其实是为了获得pid和uid
+            if (callerApp != null) {
+                //一定要保证调用进程的pid和uid正确
+                callingPid = callerApp.pid;
+                callingUid = callerApp.info.uid;
+            } else {//如调用进程没有在AMS中注册,则认为其是非法的
+                err = ActivityManager.START_PERMISSION_DENIED;
+            }
+        }
+        //判断userId的值
+        final int userId = aInfo != null ? UserHandle.getUserId(aInfo.applicationInfo.uid) : 0;
+        /*
+         * sourceRecord用于描述启动目标Activity的那个Activity
+         * resultRecord用于描述接收启动结果的Activity,即该Activity的onActivityResult将被调用以通知启动结果
+         */
+        ActivityRecord sourceRecord = null;
+        ActivityRecord resultRecord = null;
+        if (resultTo != null) {//这里为null
+            sourceRecord = isInAnyStackLocked(resultTo);
+            if (sourceRecord != null) {
+                if (requestCode >= 0 && !sourceRecord.finishing) {
+                    resultRecord = sourceRecord;
+                }
+            }
+        }
+        //获取Intent设置的启动标志
+        final int launchFlags = intent.getFlags();
+        ...//处理flag.
+         //检查err值及Intent的情况
+        if (err == ActivityManager.START_SUCCESS && intent.getComponent() == null) {
+            err = ActivityManager.START_INTENT_NOT_RESOLVED;
+        }
+        //判断err值和一些错误情况
+        ...
+        //获取resultRecord的Stack信息
+        final ActivityStack resultStack = resultRecord == null ? null : resultRecord.task.stack;
+        //如果err不为0,且resultRecord不为空,则调用sendActivityResultLocked返回错误
+        if (err != ActivityManager.START_SUCCESS) {
+            if (resultRecord != null) {
+                resultStack.sendActivityResultLocked(-1,
+                    resultRecord, resultWho, requestCode,
+                    Activity.RESULT_CANCELED, null);
+            }
+            ActivityOptions.abort(options);
+            return err;
+        }
+        //是否需要中止的flag
+        boolean abort = false;
+        //检查权限
+        final int startAnyPerm = mService.checkPermission(
+                START_ANY_ACTIVITY, callingPid, callingUid);
+        ...//权限检查失败的处理.
+        //检查是否启动的inte
+        abort |= !mService.mIntentFirewall.checkStartActivity(intent, callingUid,
+                callingPid, resolvedType, aInfo.applicationInfo);
+        //可为AMS设置一个IActivityController类型的监听者,AMS有任何动静都会回调该监听者
+        //主要用于Monkey测试
+        if (mService.mController != null) {
+            try {
+                Intent watchIntent = intent.cloneFilter();
+                //交给回调对象处理，由它判断是否能继续后面的行程
+                abort |= !mService.mController.activityStarting(watchIntent,
+                        aInfo.applicationInfo.packageName);
+            } catch (RemoteException e) {
+                mService.mController = null;
+            }
+        }
+        //判断是否需要中止,不管是权限问题还是测试时黑名单不允许,全部返回canceled信息
+        if (abort) {
+            if (resultRecord != null) {
+                resultStack.sendActivityResultLocked(-1, resultRecord, resultWho, requestCode,
+                        Activity.RESULT_CANCELED, null);
+            }
+            ActivityOptions.abort(options);
+            return ActivityManager.START_SUCCESS;
+        }
+        //创建一个ActivityRecord对象
+        ActivityRecord r = new ActivityRecord(mService, callerApp, callingUid, callingPackage,
+                intent, resolvedType, aInfo, mService.mConfiguration, resultRecord, resultWho,
+                requestCode, componentSpecified, voiceSession != null, this, container, options);
+        if(outActivity != null) {
+            outActivity[0] = r;//保存到输入参数outActivity数组中
+        }
+        final ActivityStack stack = mFocusedStack;
+        //mResumedActivity代表当前界面显示的Activity
+        if (voiceSession == null && (stack.mResumedActivity == null
+                || stack.mResumedActivity.info.applicationInfo.uid != callingUid)) {
+            //检查调用进程是否有权限切换Application
+            if (!mService.checkAppSwitchAllowedLocked(callingPid, callingUid,
+                    realCallingPid, realCallingUid, "Activity start")) {
+                //如果调用进程没有权限切换Activity,则只能把这次Activity启动请求保存起来
+                //后续有机会时再启动它
+                PendingActivityLaunch pal =
+                        new PendingActivityLaunch(r, sourceRecord, startFlags, stack);
+                //所有Pending的请求均保存到AMS mPendingActivityLaunches变量中
+                mPendingActivityLaunches.add(pal);
+                ActivityOptions.abort(options);
+                return ActivityManager.START_SWITCHES_CANCELED;
+            }
+        }
+        //用于控制app switch
+        if (mService.mDidAppSwitch) {
+            mService.mAppSwitchesAllowedTime = 0;
+        } else {
+            mService.mDidAppSwitch = true;
+        }
+        //启动处于Pending状态的Activity
+        doPendingActivityLaunchesLocked(false);
+         //调用startActivityUncheckedLocked函数
+        err = startActivityUncheckedLocked(r, sourceRecord, voiceSession, voiceInteractor,
+                startFlags, true, options, inTask);
+        //同WMS交互,去掉keyguard
+        if (err < 0) {
+            notifyActivityDrawnForKeyguard();
+        }
+        return err;
+    }
+    ```
+    `startActivityLocked`主要工作:
+    - 处理`sourceRecord`及`resultRecord`.其中,`sourceRecord`表示发起本次请求的`Activity`,`resultRecord`表示接收处理结果的`Activity`(启动一个`Activity`肯定需要它完成某项事情,当目标`Activity`将事情成后,就需要告知请求者该事情的处理结果).在一般情况下,`sourceRecord`和`resultRecord`应指向同一个`Activity`.
+    - 处理`app Switch`.如果AMS当前禁止`app switch`,则只能把本次启动请求保存起来.以待允许`app switch`时再处理
+    - 调用`startActivityUncheckedLocked`处理本次`Activity`启动请求
