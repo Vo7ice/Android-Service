@@ -1534,3 +1534,207 @@ public final void installSystemProviders() {
     - 处理`sourceRecord`及`resultRecord`.其中,`sourceRecord`表示发起本次请求的`Activity`,`resultRecord`表示接收处理结果的`Activity`(启动一个`Activity`肯定需要它完成某项事情,当目标`Activity`将事情成后,就需要告知请求者该事情的处理结果).在一般情况下,`sourceRecord`和`resultRecord`应指向同一个`Activity`.
     - 处理`app Switch`.如果AMS当前禁止`app switch`,则只能把本次启动请求保存起来.以待允许`app switch`时再处理
     - 调用`startActivityUncheckedLocked`处理本次`Activity`启动请求
+
+5. `ActivityStackSupervisor`的`startActivityUncheckedLocked`函数
+    - 第一部分代码
+    
+    ```Java
+    final int startActivityUncheckedLocked(final ActivityRecord r, ActivityRecord sourceRecord,
+            IVoiceInteractionSession voiceSession, IVoiceInteractor voiceInteractor, int startFlags,
+            boolean doResume, Bundle options, TaskRecord inTask) {
+        /* 在此例中
+         * sourceRecord = null
+         * doResume = true
+         * inTask = null
+         */
+        final Intent intent = r.intent;
+        final int callingUid = r.launchedFromUid;
+        //获取启动模式
+        final boolean launchSingleTop = r.launchMode == ActivityInfo.LAUNCH_SINGLE_TOP;
+        final boolean launchSingleInstance = r.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE;
+        final boolean launchSingleTask = r.launchMode == ActivityInfo.LAUNCH_SINGLE_TASK;
+        int launchFlags = intent.getFlags();
+        if ((launchFlags & Intent.FLAG_ACTIVITY_NEW_DOCUMENT) != 0 &&
+                (launchSingleInstance || launchSingleTask)) {
+            //属性和manifest冲突 以manifest为准
+            launchFlags &=
+                    ~(Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        } else {
+            //为了防止onActivityResult在singleTask或singleInstance出错
+            switch (r.info.documentLaunchMode) {
+                case ActivityInfo.DOCUMENT_LAUNCH_NONE:
+                    break;
+                case ActivityInfo.DOCUMENT_LAUNCH_INTO_EXISTING:
+                    launchFlags |= Intent.FLAG_ACTIVITY_NEW_DOCUMENT;
+                    break;
+                case ActivityInfo.DOCUMENT_LAUNCH_ALWAYS:
+                    launchFlags |= Intent.FLAG_ACTIVITY_NEW_DOCUMENT;
+                    break;
+                case ActivityInfo.DOCUMENT_LAUNCH_NEVER:
+                    launchFlags &= ~Intent.FLAG_ACTIVITY_MULTIPLE_TASK;
+                    break;
+            }
+        }
+        final boolean launchTaskBehind = r.mLaunchTaskBehind
+                && !launchSingleTask && !launchSingleInstance
+                && (launchFlags & Intent.FLAG_ACTIVITY_NEW_DOCUMENT) != 0;
+        if ((launchFlags & Intent.FLAG_ACTIVITY_NEW_DOCUMENT) != 0 && r.resultTo == null) {
+            launchFlags |= Intent.FLAG_ACTIVITY_NEW_TASK;
+        }
+        //添加需要的flag
+        if ((launchFlags & Intent.FLAG_ACTIVITY_NEW_TASK) != 0) {
+            if (launchTaskBehind
+                    || r.info.documentLaunchMode == ActivityInfo.DOCUMENT_LAUNCH_ALWAYS) {
+                launchFlags |= Intent.FLAG_ACTIVITY_MULTIPLE_TASK;
+            }
+        }
+        //判断是否需要调用因本次Activity启动而被系统移到后台的当前Activity的onUserLeaveHint函数
+        //由用户自己将activity调到后台就会回调onUserLeaveHint
+        mUserLeaving = (launchFlags & Intent.FLAG_ACTIVITY_NO_USER_ACTION) == 0;
+        //这里doResume为true
+        if (!doResume) {
+            r.delayedResume = true;
+        }
+        //这里Intent.FLAG_ACTIVITY_PREVIOUS_IS_TOP没有置位 notTop为空
+        ActivityRecord notTop =
+                (launchFlags & Intent.FLAG_ACTIVITY_PREVIOUS_IS_TOP) != 0 ? r : null;
+        //这里没有START_FLAG_ONLY_IF_NEEDED
+        if ((startFlags&ActivityManager.START_FLAG_ONLY_IF_NEEDED) != 0) {
+            ...
+        }
+    boolean addingToTask = false;
+    TaskRecord reuseTask = null;
+    if (sourceRecord == null && inTask != null && inTask.stack != null) {
+        final Intent baseIntent = inTask.getBaseIntent();
+        final ActivityRecord root = inTask.getRootActivity();
+        ...//判断不满足条件的情况
+        //如果task为空,就选择合适的intent来启动activity
+        if (root == null) {
+            final int flagsOfInterest = Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_MULTIPLE_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                   | Intent.FLAG_ACTIVITY_RETAIN_IN_RECENTS;
+            launchFlags = (launchFlags&~flagsOfInterest)
+                    | (baseIntent.getFlags()&flagsOfInterest);
+            intent.setFlags(launchFlags);
+            inTask.setIntent(r);
+            addingToTask = true;
+        } else if ((launchFlags & Intent.FLAG_ACTIVITY_NEW_TASK) != 0) {
+            //如果task不为空,且需要新开一个task,我们不添加到该task中
+            addingToTask = false;
+        } else {
+            addingToTask = true;
+        }
+        reuseTask = inTask;
+    } else {
+        inTask = null;
+    }
+    if (inTask == null) {
+         //如果源record者为空,则当然需要新建一个Task
+        if (sourceRecord == null) {
+            if ((launchFlags & Intent.FLAG_ACTIVITY_NEW_TASK) == 0 && inTask == null) {
+                launchFlags |= Intent.FLAG_ACTIVITY_NEW_TASK;
+            }
+        } else if (sourceRecord.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE) {
+            //启动源record为singleInstance模式,要重开一个栈
+            launchFlags |= Intent.FLAG_ACTIVITY_NEW_TASK;
+        } else if (launchSingleInstance || launchSingleTask) {
+            //如果目标record为singInstance模式或singleTask模式,也需要重开一个栈
+            launchFlags |= Intent.FLAG_ACTIVITY_NEW_TASK;
+        }
+    }
+    ```
+    主要工作:确定是否需要为新的`activity`创建一个新的`task`,即是否设置`FLAG_ACTIVITY_NEW_TASK`标志.
+    - 第二部分代码
+    ```Java
+    ActivityInfo newTaskInfo = null;
+    Intent newTaskIntent = null;
+    ActivityStack sourceStack;
+    if (sourceRecord != null) {
+        //如果源record存在且已经finish,我们会强制将flag增加成NEW_TASK来创建task
+        if (sourceRecord.finishing) {
+            if ((launchFlags & Intent.FLAG_ACTIVITY_NEW_TASK) == 0) {
+                launchFlags |= Intent.FLAG_ACTIVITY_NEW_TASK;
+                newTaskInfo = sourceRecord.info;
+                newTaskIntent = sourceRecord.task.intent;
+            }
+            sourceRecord = null;
+            sourceStack = null;
+        } else {
+            sourceStack = sourceRecord.task.stack;
+        }
+        boolean movedHome = false;
+        ActivityStack targetStack;
+        //判断是否有动画
+        intent.setFlags(launchFlags);
+        final boolean noAnimation = (launchFlags & Intent.FLAG_ACTIVITY_NO_ANIMATION) != 0;
+        if (((launchFlags & Intent.FLAG_ACTIVITY_NEW_TASK) != 0 &&
+                (launchFlags & Intent.FLAG_ACTIVITY_MULTIPLE_TASK) == 0)
+                || launchSingleInstance || launchSingleTask) {
+            if (inTask == null && r.resultTo == null) {
+                ActivityRecord intentActivity = !launchSingleInstance ?
+                    findTaskLocked(r) : findActivityLocked(intent, r.info);
+                if (intentActivity != null) {
+                    //交换了数据
+                    //是否要推送到前台
+                    ...
+                }
+            }
+        }
+    }
+    ```
+    主要工作:引出了目标`activity`
+    - 第三部分代码
+    
+    ```Java
+    if (r.packageName != null) {
+        //判断目标Activity是否已经在栈顶,如果是,需要判断是创建一个新的Activity
+        //还是调用onNewIntent(singleTop模式的处理)
+        ActivityStack topStack = mFocusedStack;
+        ActivityRecord top = topStack.topRunningNonDelayedActivityLocked(notTop);
+        if (top != null && r.resultTo == null) {
+            ...
+        } else {
+            ...//通知错误
+            return ActivityManager.START_CLASS_NOT_FOUND;
+        }
+        boolean newTask = false;
+        boolean keepCurTransition = false;
+
+        TaskRecord taskToAffiliate = launchTaskBehind && sourceRecord != null ?
+                sourceRecord.task : null;
+        if (r.resultTo == null && inTask == null && !addingToTask
+                && (launchFlags & Intent.FLAG_ACTIVITY_NEW_TASK) != 0) {
+            newTask = true;
+            targetStack = computeStackFocus(r, newTask);
+            targetStack.moveToFront("startingNewTask");
+            if (reuseTask == null) {
+                r.setTask(targetStack.createTaskRecord(getNextTaskId(),
+                        newTaskInfo != null ? newTaskInfo : r.info,
+                        newTaskIntent != null ? newTaskIntent : intent,
+                        voiceSession, voiceInteractor, !launchTaskBehind /* toTop */),
+                        taskToAffiliate);
+            } else {
+                r.setTask(reuseTask, taskToAffiliate);
+            }
+            if (!movedHome) {
+                if ((launchFlags &
+                        (FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_TASK_ON_HOME))
+                        == (FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_TASK_ON_HOME)) {
+                        r.task.setTaskToReturnTo(HOME_ACTIVITY_TYPE);
+                }
+            }
+            ...
+            //授权控制
+             mService.grantUriPermissionFromIntentLocked(callingUid, r.packageName,
+                intent, r.getUriPermissionsLocked(), r.userId);
+            //放到recent里面去
+            if (sourceRecord != null && sourceRecord.isRecentsActivity()) {
+                r.task.setTaskToReturnTo(RECENTS_ACTIVITY_TYPE);
+            }
+            targetStack.mLastPausedActivity = null;
+            //ActivityStack 的startActivityLocked函数
+            targetStack.startActivityLocked(r, newTask, doResume, keepCurTransition, options);
+            return ActivityManager.START_SUCCESS;
+    }
+    ```
+    第三部分工作:创建一个新的TaskRecord,并调用startActivityLocked函数进行处理
