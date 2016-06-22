@@ -1394,9 +1394,7 @@ public final void installSystemProviders() {
     - 获取调用者的pid和uid
     - 启动`Activity`的核心函数`startActivityLocked`
     - 根据返回值做一些处理.目标`Activity`要运行在一个新的应用进程中,就必须等待那个应用进程正常启动并处理相关请求(只有am设置了-W选项,才会进入wait这一状态)
-    
-4. 核心函数`startActivityLocked`
-    
+4. `ActivityStackSupervisor`核心函数`startActivityLocked`
     ```Java
     final int startActivityLocked(IApplicationThread caller,
             Intent intent, String resolvedType, ActivityInfo aInfo,
@@ -1671,6 +1669,7 @@ public final void installSystemProviders() {
                 (launchFlags & Intent.FLAG_ACTIVITY_MULTIPLE_TASK) == 0)
                 || launchSingleInstance || launchSingleTask) {
             if (inTask == null && r.resultTo == null) {
+                //检查是否有可复用的Task及Activity
                 ActivityRecord intentActivity = !launchSingleInstance ?
                     findTaskLocked(r) : findActivityLocked(intent, r.info);
                 if (intentActivity != null) {
@@ -1705,9 +1704,12 @@ public final void installSystemProviders() {
         if (r.resultTo == null && inTask == null && !addingToTask
                 && (launchFlags & Intent.FLAG_ACTIVITY_NEW_TASK) != 0) {
             newTask = true;
+            //目标stack,一般为mForcusStack
             targetStack = computeStackFocus(r, newTask);
             targetStack.moveToFront("startingNewTask");
             if (reuseTask == null) {
+                //ActivityRecord与TaskRecord相关连。  
+                //getNextTaskId()方法更新Task数量  
                 r.setTask(targetStack.createTaskRecord(getNextTaskId(),
                         newTaskInfo != null ? newTaskInfo : r.info,
                         newTaskIntent != null ? newTaskIntent : intent,
@@ -1737,4 +1739,79 @@ public final void installSystemProviders() {
             return ActivityManager.START_SUCCESS;
     }
     ```
-    第三部分工作:创建一个新的TaskRecord,并调用startActivityLocked函数进行处理
+    第三部分工作:得到需要放到哪个`stack`,普通应用为`mForcusStack`,桌面等为`mHomeStack`,创建一个`TaskRecord`,并调用`ActivityStack`的`startActivityLocked`函数进行处理
+    `startActivityUncheckedLocked`主要功能:根据启动模式和启动标记,判断是否需要在新的`Task`中启动`Activity`.判断是否有可复用的Task或Activity。将ActivityRecord与TaskRecord关连，更新Task数量，调用startActivityLocked()方法
+
+6. `ActivityStack`的`startActivityLocked`函数
+
+    ```Java
+    final void startActivityLocked(ActivityRecord r, boolean newTask,
+            boolean doResume, boolean keepCurTransition, Bundle options) {
+        TaskRecord rTask = r.task;
+        final int taskId = rTask.taskId;
+        // mLaunchTaskBehind tasks get placed at the back of the task stack.
+        if (!r.mLaunchTaskBehind && (taskForIdLocked(taskId) == null || newTask)) {
+            // Last activity in task had been removed or ActivityManagerService is reusing task.
+            // Insert or replace.
+            // Might not even be in.
+            insertTaskAtTop(rTask, r);
+            mWindowManager.moveTaskToTop(taskId);
+        }
+        TaskRecord task = null;
+        if (!newTask) {//本例中newTask为true
+            ...//找到可以对应的ActivityRecord在task中的位置
+        } else if (task.numFullscreen > 0) {
+            startIt = false;
+        }
+        if (task == r.task && mTaskHistory.indexOf(task) != (mTaskHistory.size() - 1)) {
+            mStackSupervisor.mUserLeaving = false;
+            if (DEBUG_USER_LEAVING) Slog.v(TAG_USER_LEAVING,
+                    "startActivity() behind front, mUserLeaving=false");
+        }
+        //将目标record放在栈顶
+        task.addActivityToTop(r);
+        task.setFrontOfTask();
+        //设置ActivityRecord的inHistory变量为true,表示已经加到mTaskHistory数组中了
+        r.putInHistory();
+        if (!isHomeStack() || numActivities() > 0) {
+            //判断是否显示Activity切换动画之类的事情,需要与WindowManagerService交互
+            ...
+        }
+        ...
+        //最终调用resumeTopActivityLocked
+        if (doResume) {
+            mStackSupervisor.resumeTopActivitiesLocked(this, r, options);
+        }
+    ```
+    - `startActivityLocked`主要功能:根据`newTask`判断是否复用`task`,将`ActivityRecord`放入栈顶,准备`Activity`切换动画,调用`resumeTopActivitiesLocked()`方法
+    - 上述代码略去了一部分逻辑处理,这部分内容和`Activity`之间的切换动画有关(通过这些动画,使切换过程看起来更加平滑和美观,需和WMS交互)
+
+7.`ActivityStackSupevisor`的`resumeTopActivitiesLocked`函数
+
+    ```Java
+    boolean resumeTopActivitiesLocked(ActivityStack targetStack, ActivityRecord target,
+            Bundle targetOptions) {
+        if (targetStack == null) {
+            targetStack = mFocusedStack;
+        }
+        // Do targetStack first.
+        boolean result = false;
+        if (isFrontStack(targetStack)) {
+            result = targetStack.resumeTopActivityLocked(target, targetOptions);
+        }
+        for (int displayNdx = mActivityDisplays.size() - 1; displayNdx >= 0; --displayNdx) {
+            final ArrayList<ActivityStack> stacks = mActivityDisplays.valueAt(displayNdx).mStacks;
+            for (int stackNdx = stacks.size() - 1; stackNdx >= 0; --stackNdx) {
+                final ActivityStack stack = stacks.get(stackNdx);
+                if (stack == targetStack) {
+                    // Already started above.
+                    continue;
+                }
+                if (isFrontStack(stack)) {
+                    stack.resumeTopActivityLocked(null);
+                }
+            }
+        }
+        return result;
+    }
+    ```
