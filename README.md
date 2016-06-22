@@ -11,3 +11,6 @@
 - PowerManagerService
 - ActivityManagerService
 
+## TIPS:
+- 修改默认加密手机:修改fstab.in中的flag ~~FLAG_FDE_TYPE~~ /或修改device\mediatek\ [project]\ fstab.{ro.hardware} forceencrypt->encrypt
+
