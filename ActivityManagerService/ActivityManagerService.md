@@ -1788,7 +1788,6 @@ public final void installSystemProviders() {
 
 7.`ActivityStackSupevisor`的`resumeTopActivitiesLocked`函数
 
-    ```Java
     boolean resumeTopActivitiesLocked(ActivityStack targetStack, ActivityRecord target,
             Bundle targetOptions) {
         if (targetStack == null) {
@@ -1814,4 +1813,4 @@ public final void installSystemProviders() {
         }
         return result;
     }
-    ```
+    
