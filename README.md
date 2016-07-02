@@ -13,4 +13,7 @@
 
 ## TIPS:
 - 修改默认加密手机:修改fstab.in中的flag ~~FLAG_FDE_TYPE~~ /或修改device\mediatek\ [project]\ fstab.{ro.hardware} forceencrypt->encrypt
+- 自定义控件属性时:
+  ```TypedArray ta = context.obtainStyledAttributes(attrs,R.styleable.TopBar);```
+  `obtainStyledAttributes`需要调用两个参数的函数,不然自定义属性不起作用
 
