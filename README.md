@@ -16,4 +16,5 @@
 - 自定义控件属性时:
   ```TypedArray ta = context.obtainStyledAttributes(attrs,R.styleable.TopBar);```
   `obtainStyledAttributes`需要调用两个参数的函数,不然自定义属性不起作用
+- 在`onDraw`方法中调用画布`canvas`的`translate`方法将绘制的位置进行平移(+width为左,+height为下)
 
