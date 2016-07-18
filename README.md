@@ -17,4 +17,17 @@
   ```TypedArray ta = context.obtainStyledAttributes(attrs,R.styleable.TopBar);```
   `obtainStyledAttributes`需要调用两个参数的函数,不然自定义属性不起作用
 - 在`onDraw`方法中调用画布`canvas`的`translate`方法将绘制的位置进行平移(+width为左,+height为下)
+- 在`LinearGradient`渐变器中
+
+  ```Java
+  public LinearGradient(
+          float x0,//渐变器x起始线
+          float y0,//渐变器y起始线
+          float x1,//渐变器x终止线 x1-x0为渐变器宽度
+          float y1,//渐变器y终止线 y1-y0为渐变器高度
+          int color0,//靠近起始线颜色
+          int color1,//靠近终止线颜色
+          TileMode tile)//平铺形式 有CLAMP,REPEAT,MIRROR
+  ```
+  [图像渲染(Shader)](http://www.cnblogs.com/menlsh/archive/2012/12/09/2810372.html)
 
