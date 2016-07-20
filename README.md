@@ -30,5 +30,17 @@
           TileMode tile)//平铺形式 有CLAMP,REPEAT,MIRROR
   ```
   [图像渲染(Shader)](http://www.cnblogs.com/menlsh/archive/2012/12/09/2810372.html)
-- 为控件添加触摸水波纹效果,在`style`中配置了`material`主题后在`xml`布局文件中`android:background="?android:attr/selectableItemBackground"`可以添加水波纹
+- 为控件添加触摸水波纹效果,在`style`中配置了`material`主题后在`xml`布局文件中增加属性
+  - `android:background="?android:attr/selectableItemBackground"`
+  - `android:background="?android:attr/selectableItemBackgroundBorderless"`
+  - 为自定义背景添加水波纹效果
+    
+    ```xml
+    <ripple xmlns:android="http://schemas.android.com/apk/res/android"
+      android:color="@android:color/white"><!-- 水波纹颜色 必须-->
+      <item>
+        <!-- 原block-->
+      </item>
+    </ripple>
+    ```
 
