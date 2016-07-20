@@ -43,4 +43,7 @@
       </item>
     </ripple>
     ```
+- 给英文设置粗体的方法:
+  - 在`xml`中`android:textStyle="bold"`
+  - 在代码中,`tv.getPaint().setFakeBoldText(true);`
 
