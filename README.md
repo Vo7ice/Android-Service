@@ -47,3 +47,8 @@
   - 在`xml`中`android:textStyle="bold"`
   - 在代码中,`tv.getPaint().setFakeBoldText(true);`
 
+
+## Android Studio Tips
+  1. 自动导包失效
+    清除缓存並重启(`File`-->`Invalidate Cache\Restart...`)
+
