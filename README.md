@@ -46,8 +46,30 @@
 - 给英文设置粗体的方法:
   - 在`xml`中`android:textStyle="bold"`
   - 在代码中,`tv.getPaint().setFakeBoldText(true);`
+- `hasOverLapping` 
+  自定义 `View` 时重写 `hasOverlappingRendering` 方法指定 `View` 是否有 `Overlapping` 的情况,提高渲染性能.
 
-
+  ```Java
+    @Override
+    public boolean hasOverlappingRendering() {
+        return false;
+    }
+  ```
+  
+-  `View.getLocationInWindow()`和 `View.getLocationOnScreen()`区别
+  ```Java
+  // location [0]--->x坐标,location [1]--->y坐标
+  int[] location = new  int[2];
+  // 获取在当前窗口内的绝对坐标,getLeft,getTop,getBottom,getRight 这一组是获取相对在它父窗口里的坐标.
+  view.getLocationInWindow(location); 
+  // 获取在整个屏幕内的绝对坐标,注意这个值是要从屏幕顶端算起,也就是包括了通知栏的高度.
+  view.getLocationOnScreen(location);
+  ```
+  
+  1. 如果在`Activity`的`OnCreate()`事件输出那些参数,是全为0,要等UI控件都加载完了才能获取到这些.在`onWindowFocusChanged(boolean hasFocus)`中获取为好.
+  2. `View.getLocationInWindow()`和 `View.getLocationOnScreen()`在`window`占据全部`screen`时,返回值相同.
+  不同的典型情况是在`Dialog`中时,当`Dialog`出现在屏幕中间时,`View.getLocationOnScreen()`取得的值要比`View.getLocationInWindow()`取得的值要大
+  
 ## Android Studio Tips
   1. 自动导包失效
     清除缓存並重启(`File`-->`Invalidate Cache\Restart...`)
