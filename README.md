@@ -69,6 +69,8 @@
   1. 如果在`Activity`的`OnCreate()`事件输出那些参数,是全为0,要等UI控件都加载完了才能获取到这些.在`onWindowFocusChanged(boolean hasFocus)`中获取为好.
   2. `View.getLocationInWindow()`和 `View.getLocationOnScreen()`在`window`占据全部`screen`时,返回值相同.
   不同的典型情况是在`Dialog`中时,当`Dialog`出现在屏幕中间时,`View.getLocationOnScreen()`取得的值要比`View.getLocationInWindow()`取得的值要大
+
+- 给`cardview`加上点击效果(水波纹) `layout`中增加`android:foreground="?attr/selectableItemBackground"` 
   
 ## Android Studio Tips
   1. 自动导包失效
