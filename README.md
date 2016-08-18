@@ -71,6 +71,7 @@
   不同的典型情况是在`Dialog`中时,当`Dialog`出现在屏幕中间时,`View.getLocationOnScreen()`取得的值要比`View.getLocationInWindow()`取得的值要大
 
 - 给`cardview`加上点击效果(水波纹) `layout`中增加`android:foreground="?attr/selectableItemBackground"` 
+- `Gson`解析`json`数据的时候,如果`json`的`key`是动态的,可以用`Map<String T>`来保存
   
 ## Android Studio Tips
   1. 自动导包失效
