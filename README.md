@@ -33,6 +33,7 @@
 - 为控件添加触摸水波纹效果,在`style`中配置了`material`主题后在`xml`布局文件中增加属性
   - `android:background="?android:attr/selectableItemBackground"`
   - `android:background="?android:attr/selectableItemBackgroundBorderless"`
+  - `<item name="android:colorControlHighlight">@color/colorAccent</item>` 可以更改波纹的颜色
   - 为自定义背景添加水波纹效果
     
     ```xml
