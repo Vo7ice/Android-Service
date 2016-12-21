@@ -77,6 +77,6 @@
 ## Android Studio Tips
   1. 自动导包失效
     清除缓存並重启(`File`-->`Invalidate Cache\Restart...`)
-
+  2. [Android studio最实用快捷键](https://segmentfault.com/a/1190000006816791)
 ## Material Icon
   - [icomoon](https://icomoon.io/app/#/select)
