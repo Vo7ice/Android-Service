@@ -66,30 +66,30 @@ public IFingerprintDaemon getFingerprintDaemon() {
 ```
 ### 指纹解锁
   1. 流程
-     1. 设置了指纹后,在`KeyguardUpdateMonitor`初始化会去回调监听`fingerprint`函数
-     
-``` 
-private void startListeningForFingerprint() {
-    if (mFingerprintRunningState == FINGERPRINT_STATE_CANCELLING) {
-        setFingerprintRunningState(FINGERPRINT_STATE_CANCELLING_RESTARTING);
-        return;
-    }
-    if (DEBUG) Log.v(TAG, "startListeningForFingerprint()");
-    int userId = ActivityManager.getCurrentUser();
-    if (isUnlockWithFingerprintPossible(userId)) {
-        if (mFingerprintCancelSignal != null) {
-            mFingerprintCancelSignal.cancel();
+    1. 设置了指纹后,在`KeyguardUpdateMonitor`初始化会去回调监听`fingerprint`函数
+    
+    ``` 
+    private void startListeningForFingerprint() {
+        if (mFingerprintRunningState == FINGERPRINT_STATE_CANCELLING) {
+            setFingerprintRunningState(FINGERPRINT_STATE_CANCELLING_RESTARTING);
+            return;
         }
-        mFingerprintCancelSignal = new CancellationSignal();
-	//mFpm为FingerprintManager
-        mFpm.authenticate(null, mFingerprintCancelSignal, 0, mAuthenticationCallback, null, userId);
-        setFingerprintRunningState(FINGERPRINT_STATE_RUNNING);
+        if (DEBUG) Log.v(TAG, "startListeningForFingerprint()");
+        int userId = ActivityManager.getCurrentUser();
+        if (isUnlockWithFingerprintPossible(userId)) {
+            if (mFingerprintCancelSignal != null) {
+                mFingerprintCancelSignal.cancel();
+            }
+            mFingerprintCancelSignal = new CancellationSignal();
+	    //mFpm为FingerprintManager
+            mFpm.authenticate(null, mFingerprintCancelSignal, 0, mAuthenticationCallback, null, userId);
+            setFingerprintRunningState(FINGERPRINT_STATE_RUNNING);
+        }
     }
-}
-```
-      2. 传递
-	   - 在`FingerprintManager`中,通过`IFingerprintReceiver`来传递`FingerprintService`发送过来的消息
-	   - 然后在通过handler传递到callback中;在`KeyguardUPdateMonitor`中
-	   - 通过`mAuthenticationCallback`把`FingerprintManager`里的消息传递到`keyguard`中,再处理
-	   - 通过`KeyguardUpdateMonitorCallback`来让具体场景处理问题
-  2. 
+    ```
+    
+    2. 传递
+      1. 在`FingerprintManager`中,通过`IFingerprintReceiver`来传递`FingerprintService`发送过来的消息
+      2. 然后在通过handler传递到callback中;在`KeyguardUPdateMonitor`中
+      3. 通过`mAuthenticationCallback`把`FingerprintManager`里的消息传递到`keyguard`中,再处理
+      4. 通过`KeyguardUpdateMonitorCallback`来让具体场景处理问题
