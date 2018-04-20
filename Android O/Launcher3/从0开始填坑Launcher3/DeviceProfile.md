@@ -11,7 +11,7 @@
         boolean hasVerticalBarLayout = isVerticalBarLayout();//是否是横屏模式且导航栏在右侧
 
         // Layout the search bar space
-		// 处理QSB的位置
+        // 处理QSB的位置
         Point searchBarBounds = getSearchBarDimensForWidgetOpts();
         View searchBar = launcher.getDropTargetBar();
         lp = (FrameLayout.LayoutParams) searchBar.getLayoutParams();
@@ -21,7 +21,7 @@
         searchBar.setLayoutParams(lp);
 
         // Layout the workspace
-		// 处理workspace位置
+        // 处理workspace位置
         PagedView workspace = (PagedView) launcher.findViewById(R.id.workspace);
         Rect workspacePadding = getWorkspacePadding(null);
         workspace.setPadding(workspacePadding.left, workspacePadding.top, workspacePadding.right,
@@ -29,7 +29,7 @@
         workspace.setPageSpacing(getWorkspacePageSpacing());
 
         // Layout the hotseat
-		// 处理hotseat
+        // 处理hotseat
         Hotseat hotseat = (Hotseat) launcher.findViewById(R.id.hotseat);
         lp = (FrameLayout.LayoutParams) hotseat.getLayoutParams();
         // We want the edges of the hotseat to line up with the edges of the workspace, but the
@@ -42,7 +42,7 @@
         if (hasVerticalBarLayout) {
             // Vertical hotseat -- The hotseat is fixed in the layout to be on the right of the
             //                     screen regardless of RTL
-			// 当横屏状态时
+            // 当横屏状态时
             int paddingRight = mInsets.left > 0
                     ? hotseatBarLeftNavBarRightPaddingPx
                     : hotseatBarRightNavBarRightPaddingPx;
@@ -62,7 +62,7 @@
                     workspacePadding.bottom + cellLayoutBottomPaddingPx);
         } else if (isTablet) {
             // Pad the hotseat with the workspace padding calculated above
-			// 当设备是平板时
+            // 当设备是平板时
             lp.gravity = Gravity.BOTTOM;
             lp.width = LayoutParams.MATCH_PARENT;
             lp.height = hotseatBarSizePx + mInsets.bottom;
@@ -74,7 +74,7 @@
         } else {
             // For phones, layout the hotseat without any bottom margin
             // to ensure that we have space for the folders
-			// 当设备为手机时
+            // 当设备为手机时
             lp.gravity = Gravity.BOTTOM;
             lp.width = LayoutParams.MATCH_PARENT;
             lp.height = hotseatBarSizePx + mInsets.bottom;
@@ -87,7 +87,7 @@
         hotseat.setLayoutParams(lp);
 
         // Layout the page indicators
-		// 处理page indicator
+        // 处理page indicator
         View pageIndicator = launcher.findViewById(R.id.page_indicator);
         if (pageIndicator != null) {
             lp = (FrameLayout.LayoutParams) pageIndicator.getLayoutParams();
@@ -108,7 +108,7 @@
         }
 
         // Layout the Overview Mode
-		// 处理预览模式
+        // 处理预览模式
         ViewGroup overviewMode = launcher.getOverviewPanel();
         if (overviewMode != null) {
             int visibleChildCount = getVisibleChildCount(overviewMode);
@@ -123,7 +123,7 @@
         }
 
         // Layout the AllAppsRecyclerView
-		// 处理AllApps
+        // 处理AllApps
         View view = launcher.findViewById(R.id.apps_list_view);
         int paddingLeftRight = desiredWorkspaceLeftRightMarginPx + cellLayoutPaddingLeftRightPx;
         view.setPadding(paddingLeftRight, view.getPaddingTop(), paddingLeftRight,
